@@ -7,20 +7,19 @@ from telegram import Update
 from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
 import google.generativeai as genai
 
-# --- НАСТРОЙКИ ---
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN") 
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")   # Твой ключ
+
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 genai.configure(api_key=GEMINI_API_KEY)
 
-# Папки и пути
+
 VIDEOS_DIR = "videos"
 FRAMES_DIR = "frames"
 FFMPEG_EXE = r"C:\ffmpeg\bin\ffmpeg.exe"
-FFPROBE_EXE = r"C:\ffmpeg\bin\ffprobe.exe"  # ← Убедись, что ffprobe в той же папке!
+FFPROBE_EXE = r"C:\ffmpeg\bin\ffprobe.exe"
 VIDEO_BASE = os.path.join(VIDEOS_DIR, "video_temp")
 
-# Создаём папки если нет
 for directory in [VIDEOS_DIR, FRAMES_DIR]:
     if not os.path.exists(directory):
         os.makedirs(directory)
@@ -106,7 +105,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         print(f"[DEBUG] Скачиваю видео из: {url}")
 
-        # Скачивание
         subprocess.run(
             [
                 "yt-dlp",
@@ -149,15 +147,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         print(f"[DEBUG] Видео скачано: {downloaded_file}")
 
-        # Получаем длительность
         duration = get_video_duration(downloaded_file)
         if duration <= 0:
             raise ValueError("Не удалось определить длительность видео")
 
         print(f"[DEBUG] Длительность видео: {duration} сек")
 
-        # Позиции в процентах (равномерно по видео)
-        positions = [10, 30, 50, 70, 90]  # % — можно добавить/убрать
+        positions = [10, 30, 50, 70, 90]
         frame_files = []
 
         for i, percent in enumerate(positions, 1):
@@ -168,7 +164,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 FFMPEG_EXE,
                 "-y",
                 "-ss",
-                str(seek_time),  # seek к секундам
+                str(seek_time),
                 "-i",
                 downloaded_file,
                 "-frames:v",
@@ -188,9 +184,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception as sub_e:
                 print(f"[WARNING] Проблема с кадром на {percent}%: {sub_e}")
 
-        # Дополнительно: кадр из начала и конца, если мало
         if len(frame_files) < 3:
-            for extra in [0.0, duration - 1]:  # начало и почти конец
+            for extra in [0.0, duration - 1]:
                 if extra > 0:
                     output_frame = os.path.join(
                         FRAMES_DIR, f"frame_extra_{len(frame_files)+1:02d}.jpg"
@@ -222,10 +217,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         print(f"[DEBUG] Извлечено кадров: {len(frame_files)}")
 
-        # Анализ
         answer = get_movie_description(frame_files)
 
-        # Приукрашивание
         if "Не удалось точно определить" in answer:
             final_text = f"🤔 Хм, загадочное видео! Не смог уверенно определить... Попробуй другой ролик! 🎬\n\n{answer}"
         else:

@@ -5,3 +5,10 @@ __pycache__/
 videos/
 frames/
 *.log
+
+videos/
+frames/
+*.mp4
+*.webm
+*.mkv
+video_temp.*
