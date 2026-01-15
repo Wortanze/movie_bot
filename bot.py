@@ -1,9 +1,7 @@
-import sys
 import os
 import subprocess
 import json
 import base64
-import time
 from telegram import Update
 from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
 import google.generativeai as genai
@@ -16,11 +14,8 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 genai.configure(api_key=GEMINI_API_KEY)
 
-
 VIDEOS_DIR = "videos"
 FRAMES_DIR = "frames"
-FFMPEG_EXE = r"C:\ffmpeg\bin\ffmpeg.exe"
-FFPROBE_EXE = r"C:\ffmpeg\bin\ffprobe.exe"
 VIDEO_BASE = os.path.join(VIDEOS_DIR, "video_temp")
 
 for directory in [VIDEOS_DIR, FRAMES_DIR]:
@@ -37,11 +32,10 @@ def clear_frames():
 
 
 def get_video_duration(video_path):
-    """Получаем длительность видео в секундах через ffprobe"""
     try:
         result = subprocess.run(
             [
-                FFPROBE_EXE,
+                "ffprobe",
                 "-v",
                 "error",
                 "-show_entries",
@@ -57,7 +51,7 @@ def get_video_duration(video_path):
         data = json.loads(result.stdout)
         return float(data["format"]["duration"])
     except Exception as e:
-        print(f"[ERROR] Не удалось получить длительность: {e}")
+        print(f"[ERROR] Duration error: {e}")
         return 0
 
 
@@ -102,21 +96,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text("🔎 Качаю видео и пытаюсь угадать... ✨")
 
     clear_frames()
-
     downloaded_file = None
 
     try:
-        print(f"[DEBUG] Скачиваю видео из: {url}")
-
         subprocess.run(
             [
                 "yt-dlp",
-                "--user-agent",
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-                "--referer",
-                "https://www.tiktok.com/",
-                "--extractor-args",
-                "tiktok:api_hostname=api22-normal-c-useast2a.tiktokv.com",
                 "-o",
                 f"{VIDEO_BASE}.%(ext)s",
                 "--force-overwrites",
@@ -124,9 +109,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "mp4",
                 "--retries",
                 "10",
-                "--fragment-retries",
-                "10",
-                "--no-check-certificate",
                 url,
             ],
             check=True,
@@ -146,13 +128,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not downloaded_file:
             raise FileNotFoundError("Видео не найдено после скачивания")
 
-        print(f"[DEBUG] Видео скачано: {downloaded_file}")
-
         duration = get_video_duration(downloaded_file)
         if duration <= 0:
             raise ValueError("Не удалось определить длительность видео")
-
-        print(f"[DEBUG] Длительность видео: {duration} сек")
 
         positions = [10, 30, 50, 70, 90]
         frame_files = []
@@ -162,7 +140,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             output_frame = os.path.join(FRAMES_DIR, f"frame_{i:02d}.jpg")
 
             cmd = [
-                FFMPEG_EXE,
+                "ffmpeg",
                 "-y",
                 "-ss",
                 str(seek_time),
@@ -179,11 +157,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 subprocess.run(cmd, check=True, capture_output=True)
                 if os.path.exists(output_frame):
                     frame_files.append(output_frame)
-                    print(
-                        f"[DEBUG] Извлечён кадр на {percent}% ({seek_time:.1f} сек): {output_frame}"
-                    )
             except Exception as sub_e:
-                print(f"[WARNING] Проблема с кадром на {percent}%: {sub_e}")
+                print(f"[WARNING] Кадр {percent}%: {sub_e}")
 
         if len(frame_files) < 3:
             for extra in [0.0, duration - 1]:
@@ -192,7 +167,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         FRAMES_DIR, f"frame_extra_{len(frame_files)+1:02d}.jpg"
                     )
                     cmd = [
-                        FFMPEG_EXE,
+                        "ffmpeg",
                         "-y",
                         "-ss",
                         str(extra),
@@ -212,11 +187,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         pass
 
         if not frame_files:
-            raise FileNotFoundError(
-                "Ни один кадр не извлёкся — проверь путь к ffmpeg/ffprobe и права на папки"
-            )
-
-        print(f"[DEBUG] Извлечено кадров: {len(frame_files)}")
+            raise FileNotFoundError("Ни один кадр не извлёкся")
 
         answer = get_movie_description(frame_files)
 
@@ -233,12 +204,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"❌ Ошибка yt-dlp/ffmpeg: {e.stderr.decode() if e.stderr else str(e)}"
         )
         await msg.edit_text(error_msg)
-        print(error_msg)
-
     except Exception as e:
         await msg.edit_text(f"❌ Критическая ошибка: {str(e)}")
-        print(f"[ERROR] {str(e)}")
-
     finally:
         if downloaded_file and os.path.exists(downloaded_file):
             try:
