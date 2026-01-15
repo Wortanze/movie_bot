@@ -1,3 +1,4 @@
+import sys
 import os
 import subprocess
 import json
@@ -6,7 +7,9 @@ import time
 from telegram import Update
 from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
 import google.generativeai as genai
+from dotenv import load_dotenv
 
+load_dotenv()
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
@@ -108,8 +111,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         subprocess.run(
             [
                 "yt-dlp",
-                "--impersonate",
-                "chrome-124",
                 "--user-agent",
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
                 "--referer",
