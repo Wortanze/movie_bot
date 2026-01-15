@@ -99,12 +99,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     downloaded_file = None
 
     try:
-        print("Проверяю куки:", os.path.exists("/cookies.txt"))
         subprocess.run(
             [
                 "yt-dlp",
-                "--cookies",
-                "cookies.txt",
                 "-o",
                 f"{VIDEO_BASE}.%(ext)s",
                 "--force-overwrites",
