@@ -102,6 +102,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         subprocess.run(
             [
                 "yt-dlp",
+                "--cookies",
+                "cookies.txt",
                 "-o",
                 f"{VIDEO_BASE}.%(ext)s",
                 "--force-overwrites",
