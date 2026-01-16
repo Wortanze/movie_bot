@@ -4,6 +4,7 @@ from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTyp
 import google.generativeai as genai
 from dotenv import load_dotenv
 from playwright.async_api import async_playwright
+import asyncio
 
 load_dotenv()
 
@@ -24,16 +25,30 @@ def clear_frames():
             pass
 
 
+async def ensure_chromium():
+    """
+    Проверяем, установлен ли Chromium. Если нет — скачиваем через Playwright.
+    Работает и на Choreo, и локально.
+    """
+    async with async_playwright() as pw:
+        try:
+            browser = await pw.chromium.launch(headless=True)
+            await browser.close()
+        except Exception:
+            print("⏳ Chromium не найден, скачиваем...")
+            await pw.chromium.install()
+            print("✅ Chromium установлен")
+
+
 async def get_frames_with_playwright(url, positions=[0.1, 0.2, 0.4, 0.6, 0.8]):
+    """
+    Берем видео по ссылке (YouTube/TikTok/Instagram) и делаем скриншоты кадров.
+    """
     clear_frames()
     frame_paths = []
 
-    chromium_path = os.path.join(os.getcwd(), "chromium", "chrome")
-    if os.name == "nt":
-        chromium_path += ".exe"
-
     async with async_playwright() as pw:
-        browser = await pw.chromium.launch(headless=True, executable_path=chromium_path)
+        browser = await pw.chromium.launch(headless=True)
         context = await browser.new_context()
         page = await context.new_page()
         await page.goto(url, timeout=60_000)
@@ -59,6 +74,9 @@ async def get_frames_with_playwright(url, positions=[0.1, 0.2, 0.4, 0.6, 0.8]):
 
 
 def guess_movie(frame_paths):
+    """
+    Отправляем кадры в Gemini для распознавания видео.
+    """
     model = genai.GenerativeModel("gemini-2.5-flash")
     prompt = """
 Перед тобой несколько кадров из ОДНОГО видео.
@@ -114,9 +132,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 if __name__ == "__main__":
+    # Автоматическая установка Chromium перед запуском бота
+    asyncio.run(ensure_chromium())
+
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
-    print(
-        "🚀 БОТ ЗАПУЩЕН (Playwright + GEMINI PRO MODE) для YouTube, TikTok и Instagram Reels"
-    )
+    print("🚀 БОТ ЗАПУЩЕН (Playwright + GEMINI PRO MODE) для YouTube, TikTok и Instagram Reels")
     app.run_polling()
