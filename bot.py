@@ -9,14 +9,12 @@ from dotenv import load_dotenv
 load_dotenv()
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 
-genai.configure(api_key=GEMINI_API_KEY)
+genai.configure(api_key=GOOGLE_API_KEY)
 
 FRAMES_DIR = "frames"
-
-if not os.path.exists(FRAMES_DIR):
-    os.makedirs(FRAMES_DIR)
+os.makedirs(FRAMES_DIR, exist_ok=True)
 
 
 def clear_frames():
@@ -27,7 +25,7 @@ def clear_frames():
             pass
 
 
-def extract_youtube_id(url: str) -> str | None:
+def extract_youtube_id(url: str):
     patterns = [
         r"v=([a-zA-Z0-9_-]{11})",
         r"youtu\.be/([a-zA-Z0-9_-]{11})",
@@ -40,7 +38,7 @@ def extract_youtube_id(url: str) -> str | None:
     return None
 
 
-def get_youtube_cdn_frames(video_id: str) -> list[str]:
+def get_youtube_cdn_frames(video_id: str):
     base = f"https://img.youtube.com/vi/{video_id}"
     return [
         f"{base}/hqdefault.jpg",
@@ -50,7 +48,7 @@ def get_youtube_cdn_frames(video_id: str) -> list[str]:
     ]
 
 
-def download_cdn_frames(urls: list[str]) -> list[str]:
+def download_cdn_frames(urls):
     clear_frames()
     paths = []
 
@@ -73,9 +71,9 @@ def get_movie_description(frame_paths):
         model = genai.GenerativeModel("gemini-2.5-flash")
 
         prompt = """
-Это кадры из фильма, сериала, аниме, мультфильма или видео.
-Назови ТОЛЬКО:
+Это кадры из фильма, сериала, аниме или мультфильма.
 
+Верни СТРОГО:
 Название: ...
 Год: ...
 Рейтинг IMDb: ... или -
@@ -83,8 +81,6 @@ def get_movie_description(frame_paths):
 
 Если не уверен на 90%+ — напиши:
 Не удалось точно определить
-
-Ничего лишнего не добавляй.
 """
 
         content = [prompt]
@@ -96,18 +92,24 @@ def get_movie_description(frame_paths):
                 })
 
         response = model.generate_content(content)
-        return response.text.strip() or "Не удалось точно определить"
+        text = response.text.strip()
+
+        if not text or "Ошибка" in text:
+            return "Не удалось точно определить"
+
+        return text
 
     except Exception as e:
-        return f"Ошибка AI: {str(e)}"
+        print("[AI ERROR]", e)
+        return "Не удалось точно определить"
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     url = update.message.text.strip()
-    if not url or "http" not in url.lower():
+    if "http" not in url.lower():
         return
 
-    msg = await update.message.reply_text("🔎 Анализирую видео по кадрам... ✨")
+    msg = await update.message.reply_text("🔎 Анализирую кадры...")
 
     try:
         video_id = extract_youtube_id(url)
@@ -115,29 +117,21 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await msg.edit_text("❌ Сейчас поддерживается только YouTube / Shorts")
             return
 
-        cdn_urls = get_youtube_cdn_frames(video_id)
-        frame_files = download_cdn_frames(cdn_urls)
+        frames = download_cdn_frames(get_youtube_cdn_frames(video_id))
 
-        if len(frame_files) < 2:
-            await msg.edit_text("❌ Не удалось получить кадры с YouTube CDN")
+        if len(frames) < 2:
+            await msg.edit_text("❌ Не удалось получить кадры")
             return
 
-        answer = get_movie_description(frame_files)
+        answer = get_movie_description(frames)
 
-        if "Не удалось точно определить" in answer:
-            final_text = (
-                "🤔 Загадочный ролик...\n"
-                "Не смог определить с высокой уверенностью.\n\n"
-                f"{answer}"
-            )
+        if answer == "Не удалось точно определить":
+            await msg.edit_text("🤔 Не удалось уверенно определить фильм")
         else:
-            final_text = f"🎥 Найдено! ✨\n\n{answer}"
-
-        await update.message.reply_text(final_text)
-        await msg.delete()
+            await msg.edit_text(f"🎥 Найдено! ✨\n\n{answer}")
 
     except Exception as e:
-        await msg.edit_text(f"❌ Ошибка: {str(e)}")
+        await msg.edit_text(f"❌ Ошибка: {e}")
 
     finally:
         clear_frames()
@@ -146,5 +140,5 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 if __name__ == "__main__":
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
-    print("🚀 БОТ ЗАПУЩЕН (CDN + GEMINI VISION)")
+    print("🚀 БОТ ЗАПУЩЕН (CDN + GEMINI)")
     app.run_polling()
