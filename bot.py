@@ -1,10 +1,9 @@
 import os
-import re
-import requests
 from telegram import Update
 from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
 import google.generativeai as genai
 from dotenv import load_dotenv
+from playwright.async_api import async_playwright
 
 load_dotenv()
 
@@ -25,114 +24,87 @@ def clear_frames():
             pass
 
 
-def extract_youtube_id(url: str):
-    patterns = [
-        r"v=([a-zA-Z0-9_-]{11})",
-        r"youtu\.be/([a-zA-Z0-9_-]{11})",
-        r"shorts/([a-zA-Z0-9_-]{11})",
-    ]
-    for p in patterns:
-        m = re.search(p, url)
-        if m:
-            return m.group(1)
-    return None
-
-
-def get_youtube_cdn_frames(video_id: str):
-    base = f"https://img.youtube.com/vi/{video_id}"
-    return [
-        f"{base}/hqdefault.jpg",
-        f"{base}/mqdefault.jpg",
-        f"{base}/sddefault.jpg",
-        f"{base}/maxresdefault.jpg",
-    ]
-
-
-def download_cdn_frames(urls):
+async def get_frames_with_playwright(url, positions=[0.1, 0.2, 0.4, 0.6, 0.8]):
     clear_frames()
-    paths = []
+    frame_paths = []
 
-    for i, url in enumerate(urls, 1):
-        try:
-            r = requests.get(url, timeout=5)
-            if r.status_code == 200 and len(r.content) > 10_000:
-                path = os.path.join(FRAMES_DIR, f"frame_{i:02d}.jpg")
-                with open(path, "wb") as f:
-                    f.write(r.content)
-                paths.append(path)
-        except:
-            pass
+    async with async_playwright() as pw:
+        browser = await pw.chromium.launch(headless=True)
+        context = await browser.new_context()
+        page = await context.new_page()
+        await page.goto(url, timeout=60_000)
+        await page.wait_for_timeout(3000) 
 
-    return paths
+        video = await page.query_selector("video")
+        if not video:
+            await browser.close()
+            return []
+
+        duration = await page.eval_on_selector("video", "v => v.duration") or 60
+
+        for i, p in enumerate(positions, 1):
+            t = duration * p
+            await page.eval_on_selector("video", f"v => v.currentTime = {t}")
+            await page.wait_for_timeout(1000)
+            frame_path = os.path.join(FRAMES_DIR, f"frame_{i:02d}.jpg")
+            await video.screenshot(path=frame_path)
+            frame_paths.append(frame_path)
+
+        await browser.close()
+    return frame_paths
 
 
-def get_movie_description(frame_paths):
-    try:
-        model = genai.GenerativeModel("gemini-2.5-flash")
-
-        prompt = """
-Это кадры из фильма, сериала, аниме или мультфильма.
-
-Верни СТРОГО:
+def guess_movie(frame_paths):
+    model = genai.GenerativeModel("gemini-2.5-flash")
+    prompt = """
+Перед тобой несколько кадров из ОДНОГО видео.
+Определи, из какого фильма, сериала, аниме или мультфильма они взяты.
+Проанализируй:
+- персонажей, лица, одежду
+- визуальный стиль, цветокор
+- эпоху, технологии, оружие
+- жанр и атмосферу
+- возможных актёров
+Отвечай ТОЛЬКО если уверен минимум на 90%.
+Формат строго:
 Название: ...
 Год: ...
-Рейтинг IMDb: ... или -
+Рейтинг IMDb: ...
 Описание: 1–2 предложения без спойлеров
-
-Если не уверен на 90%+ — напиши:
+Если уверенность ниже 90% — напиши:
 Не удалось точно определить
 """
+    content = [prompt]
+    for frame in frame_paths:
+        with open(frame, "rb") as img:
+            content.append({"mime_type": "image/jpeg", "data": img.read()})
 
-        content = [prompt]
-        for frame in frame_paths:
-            with open(frame, "rb") as img:
-                content.append({
-                    "mime_type": "image/jpeg",
-                    "data": img.read()
-                })
-
-        response = model.generate_content(content)
-        text = response.text.strip()
-
-        if not text or "Ошибка" in text:
-            return "Не удалось точно определить"
-
-        return text
-
-    except Exception as e:
-        print("[AI ERROR]", e)
-        return "Не удалось точно определить"
+    response = model.generate_content(content)
+    return response.text.strip()
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     url = update.message.text.strip()
-    if "http" not in url.lower():
+    if not url.lower().startswith(("http://", "https://")):
         return
 
-    msg = await update.message.reply_text("🔎 Анализирую кадры...")
+    msg = await update.message.reply_text("🔎 Анализирую видео через Playwright...")
 
     try:
-        video_id = extract_youtube_id(url)
-        if not video_id:
-            await msg.edit_text("❌ Сейчас поддерживается только YouTube / Shorts")
-            return
-
-        frames = download_cdn_frames(get_youtube_cdn_frames(video_id))
-
+        frames = await get_frames_with_playwright(url)
         if len(frames) < 2:
             await msg.edit_text("❌ Не удалось получить кадры")
             return
 
-        answer = get_movie_description(frames)
+        guess = guess_movie(frames)
 
-        if answer == "Не удалось точно определить":
+        if "Не удалось точно определить" in guess:
             await msg.edit_text("🤔 Не удалось уверенно определить фильм")
         else:
-            await msg.edit_text(f"🎥 Найдено! ✨\n\n{answer}")
+            await msg.edit_text(f"🎥 Найдено! ✨\n\n{guess}")
 
     except Exception as e:
         await msg.edit_text(f"❌ Ошибка: {e}")
-
     finally:
         clear_frames()
 
@@ -140,5 +112,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 if __name__ == "__main__":
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
-    print("🚀 БОТ ЗАПУЩЕН (CDN + GEMINI)")
+    print(
+        "🚀 БОТ ЗАПУЩЕН (Playwright + GEMINI PRO MODE) для YouTube, TikTok и Instagram Reels"
+    )
     app.run_polling()
