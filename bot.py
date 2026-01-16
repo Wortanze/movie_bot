@@ -28,12 +28,16 @@ async def get_frames_with_playwright(url, positions=[0.1, 0.2, 0.4, 0.6, 0.8]):
     clear_frames()
     frame_paths = []
 
+    chromium_path = os.path.join(os.getcwd(), "chromium", "chrome")
+    if os.name == "nt":
+        chromium_path += ".exe"
+
     async with async_playwright() as pw:
-        browser = await pw.chromium.launch(headless=True)
+        browser = await pw.chromium.launch(headless=True, executable_path=chromium_path)
         context = await browser.new_context()
         page = await context.new_page()
         await page.goto(url, timeout=60_000)
-        await page.wait_for_timeout(3000) 
+        await page.wait_for_timeout(3000)
 
         video = await page.query_selector("video")
         if not video:
