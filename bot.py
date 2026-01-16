@@ -1,7 +1,6 @@
 import os
-import subprocess
-import json
-import base64
+import re
+import requests
 from telegram import Update
 from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
 import google.generativeai as genai
@@ -14,13 +13,10 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 genai.configure(api_key=GEMINI_API_KEY)
 
-VIDEOS_DIR = "videos"
 FRAMES_DIR = "frames"
-VIDEO_BASE = os.path.join(VIDEOS_DIR, "video_temp")
 
-for directory in [VIDEOS_DIR, FRAMES_DIR]:
-    if not os.path.exists(directory):
-        os.makedirs(directory)
+if not os.path.exists(FRAMES_DIR):
+    os.makedirs(FRAMES_DIR)
 
 
 def clear_frames():
@@ -31,28 +27,45 @@ def clear_frames():
             pass
 
 
-def get_video_duration(video_path):
-    try:
-        result = subprocess.run(
-            [
-                "ffprobe",
-                "-v",
-                "error",
-                "-show_entries",
-                "format=duration",
-                "-of",
-                "json",
-                video_path,
-            ],
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-        data = json.loads(result.stdout)
-        return float(data["format"]["duration"])
-    except Exception as e:
-        print(f"[ERROR] Duration error: {e}")
-        return 0
+def extract_youtube_id(url: str) -> str | None:
+    patterns = [
+        r"v=([a-zA-Z0-9_-]{11})",
+        r"youtu\.be/([a-zA-Z0-9_-]{11})",
+        r"shorts/([a-zA-Z0-9_-]{11})",
+    ]
+    for p in patterns:
+        m = re.search(p, url)
+        if m:
+            return m.group(1)
+    return None
+
+
+def get_youtube_cdn_frames(video_id: str) -> list[str]:
+    base = f"https://img.youtube.com/vi/{video_id}"
+    return [
+        f"{base}/hqdefault.jpg",
+        f"{base}/mqdefault.jpg",
+        f"{base}/sddefault.jpg",
+        f"{base}/maxresdefault.jpg",
+    ]
+
+
+def download_cdn_frames(urls: list[str]) -> list[str]:
+    clear_frames()
+    paths = []
+
+    for i, url in enumerate(urls, 1):
+        try:
+            r = requests.get(url, timeout=5)
+            if r.status_code == 200 and len(r.content) > 10_000:
+                path = os.path.join(FRAMES_DIR, f"frame_{i:02d}.jpg")
+                with open(path, "wb") as f:
+                    f.write(r.content)
+                paths.append(path)
+        except:
+            pass
+
+    return paths
 
 
 def get_movie_description(frame_paths):
@@ -60,32 +73,33 @@ def get_movie_description(frame_paths):
         model = genai.GenerativeModel("gemini-2.5-flash")
 
         prompt = """
-Это кадр из фильма, сериала, аниме, мультфильма или любого видео-контента. Назови только:
-- Название (на русском или английском, оригинальное предпочтительнее)
-- Год выпуска
-- IMDb рейтинг (если знаешь точно, иначе -)
-- Краткое описание (1–2 предложения, без спойлеров, чтобы заинтересовать: подчеркни атмосферу, жанр, уникальность)
+Это кадры из фильма, сериала, аниме, мультфильма или видео.
+Назови ТОЛЬКО:
 
-Формат ответа строго:
-Название: [название]
-Год: [год]
-Рейтинг IMDb: [число или -]
-Описание: [краткое описание]
+Название: ...
+Год: ...
+Рейтинг IMDb: ... или -
+Описание: 1–2 предложения без спойлеров
 
-Если не уверен на 90%+ — пиши "Не удалось точно определить".
-Не добавляй ничего лишнего!
+Если не уверен на 90%+ — напиши:
+Не удалось точно определить
+
+Ничего лишнего не добавляй.
 """
 
         content = [prompt]
         for frame in frame_paths:
-            with open(frame, "rb") as img_file:
-                content.append({"mime_type": "image/jpeg", "data": img_file.read()})
+            with open(frame, "rb") as img:
+                content.append({
+                    "mime_type": "image/jpeg",
+                    "data": img.read()
+                })
 
         response = model.generate_content(content)
-        return response.text.strip() or "Не удалось определить"
+        return response.text.strip() or "Не удалось точно определить"
 
     except Exception as e:
-        return f"Ошибка: {str(e)}"
+        return f"Ошибка AI: {str(e)}"
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -93,130 +107,44 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not url or "http" not in url.lower():
         return
 
-    msg = await update.message.reply_text("🔎 Качаю видео и пытаюсь угадать... ✨")
-
-    clear_frames()
-    downloaded_file = None
+    msg = await update.message.reply_text("🔎 Анализирую видео по кадрам... ✨")
 
     try:
-        subprocess.run(
-            [
-                "yt-dlp",
-                "-o",
-                f"{VIDEO_BASE}.%(ext)s",
-                "--force-overwrites",
-                "--merge-output-format",
-                "mp4",
-                "--retries",
-                "10",
-                url,
-            ],
-            check=True,
-            capture_output=True,
-        )
+        video_id = extract_youtube_id(url)
+        if not video_id:
+            await msg.edit_text("❌ Сейчас поддерживается только YouTube / Shorts")
+            return
 
-        possible_files = [
-            f"{VIDEO_BASE}.mp4",
-            f"{VIDEO_BASE}.webm",
-            f"{VIDEO_BASE}.mkv",
-        ]
-        for candidate in possible_files:
-            if os.path.exists(candidate):
-                downloaded_file = candidate
-                break
+        cdn_urls = get_youtube_cdn_frames(video_id)
+        frame_files = download_cdn_frames(cdn_urls)
 
-        if not downloaded_file:
-            raise FileNotFoundError("Видео не найдено после скачивания")
-
-        duration = get_video_duration(downloaded_file)
-        if duration <= 0:
-            raise ValueError("Не удалось определить длительность видео")
-
-        positions = [10, 30, 50, 70, 90]
-        frame_files = []
-
-        for i, percent in enumerate(positions, 1):
-            seek_time = (percent / 100.0) * duration
-            output_frame = os.path.join(FRAMES_DIR, f"frame_{i:02d}.jpg")
-
-            cmd = [
-                "ffmpeg",
-                "-y",
-                "-ss",
-                str(seek_time),
-                "-i",
-                downloaded_file,
-                "-frames:v",
-                "1",
-                "-q:v",
-                "2",
-                output_frame,
-            ]
-
-            try:
-                subprocess.run(cmd, check=True, capture_output=True)
-                if os.path.exists(output_frame):
-                    frame_files.append(output_frame)
-            except Exception as sub_e:
-                print(f"[WARNING] Кадр {percent}%: {sub_e}")
-
-        if len(frame_files) < 3:
-            for extra in [0.0, duration - 1]:
-                if extra > 0:
-                    output_frame = os.path.join(
-                        FRAMES_DIR, f"frame_extra_{len(frame_files)+1:02d}.jpg"
-                    )
-                    cmd = [
-                        "ffmpeg",
-                        "-y",
-                        "-ss",
-                        str(extra),
-                        "-i",
-                        downloaded_file,
-                        "-frames:v",
-                        "1",
-                        "-q:v",
-                        "2",
-                        output_frame,
-                    ]
-                    try:
-                        subprocess.run(cmd, check=True, capture_output=True)
-                        if os.path.exists(output_frame):
-                            frame_files.append(output_frame)
-                    except:
-                        pass
-
-        if not frame_files:
-            raise FileNotFoundError("Ни один кадр не извлёкся")
+        if len(frame_files) < 2:
+            await msg.edit_text("❌ Не удалось получить кадры с YouTube CDN")
+            return
 
         answer = get_movie_description(frame_files)
 
         if "Не удалось точно определить" in answer:
-            final_text = f"🤔 Хм, загадочное видео! Не смог уверенно определить... Попробуй другой ролик! 🎬\n\n{answer}"
+            final_text = (
+                "🤔 Загадочный ролик...\n"
+                "Не смог определить с высокой уверенностью.\n\n"
+                f"{answer}"
+            )
         else:
-            final_text = f"🎥 Успешно найдено! ✨\n\n{answer}\n\nЗахватывающее зрелище, не так ли? 😎"
+            final_text = f"🎥 Найдено! ✨\n\n{answer}"
 
         await update.message.reply_text(final_text)
         await msg.delete()
 
-    except subprocess.CalledProcessError as e:
-        error_msg = (
-            f"❌ Ошибка yt-dlp/ffmpeg: {e.stderr.decode() if e.stderr else str(e)}"
-        )
-        await msg.edit_text(error_msg)
     except Exception as e:
-        await msg.edit_text(f"❌ Критическая ошибка: {str(e)}")
+        await msg.edit_text(f"❌ Ошибка: {str(e)}")
+
     finally:
-        if downloaded_file and os.path.exists(downloaded_file):
-            try:
-                os.remove(downloaded_file)
-            except:
-                pass
         clear_frames()
 
 
 if __name__ == "__main__":
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
-    print("--- БОТ ЗАПУЩЕН (Gemini Vision MODE) ---")
+    print("🚀 БОТ ЗАПУЩЕН (CDN + GEMINI VISION)")
     app.run_polling()
